@@ -1,6 +1,5 @@
 'use client';
 
-import { GoogleGenAI, Type } from "@google/genai";
 import Image from 'next/image';
 import * as htmlToImage from 'html-to-image';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -22,12 +21,14 @@ import {
   ChevronRight,
   X,
   Trash2,
-  Layout
+  Layout,
+  Search,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Types
-type System = 'Protheus' | 'Fluig' | 'SGBOM' | 'Greendocs' | 'Projuris';
+type System = string;
 type Section = 'editor' | 'templates' | 'history' | 'settings';
 
 interface MaintenanceWindow {
@@ -37,6 +38,10 @@ interface MaintenanceWindow {
   endDate: string;
   startTime: string;
   endTime: string;
+  additionalText?: string;
+  showStandardText?: boolean;
+  gmud?: string;
+  type?: 'outage' | 'communication';
 }
 
 interface TranslatedContent {
@@ -60,6 +65,7 @@ interface MemoSettings {
   footerLine2: string;
   headerImage?: string;
   footerImage?: string;
+  googleApiKey?: string;
   openaiApiKey?: string;
   customPrompt?: string;
 }
@@ -89,13 +95,18 @@ interface HistoryItem {
   data: MemoData;
 }
 
-const DEFAULT_PROMPT = `Translate the following IT maintenance memo content into English (en) and Simplified Chinese (zh-CN).
+const DEFAULT_PROMPT = `Translate the following IT maintenance memo into professional American English (en-US) and Simplified Chinese (zh-CN).
 
-Instructions for Windows:
-- Use a descriptive sentence format.
-- If Start Date and End Date are the same, format like: "March 29, 2026 (Sunday) starting at 08:00h with an estimated completion by 12:00h."
-- If they are different, format like: "Starting on March 29 (Sunday) at 22:00h with an estimated completion on March 30 (Monday) at 04:00h."
-- Translate these formats appropriately for English and Chinese.
+Language Guidelines:
+1. English (en-US): Use standard American English spelling and formatting (e.g. Month Day, Year like "January 2, 2026", 12-hour AM/PM format like "11:00 PM to 1:00 AM").
+2. Simplified Chinese (zh-CN): Use standard Simplified Chinese (简体中文) for corporate IT communications (e.g. "YYYY年M月D日", 24-hour time like "23:00 至 01:00").
+
+Instructions for Maintenance Windows:
+- For English (en-US), if Start Date and End Date are identical, format like: "On March 29, 2026, from 8:00 AM to 12:00 PM." If dates differ, format like: "Starting on March 29 at 10:00 PM until March 30 at 4:00 AM."
+- For Simplified Chinese (zh-CN), format like: "维护时间：2026年3月29日 22:00 至 2026年3月30日 04:00。"
+- If "Include Standard Text" is false, ONLY use the additional details text for the window description.
+- If "Include Standard Text" is true and additional details exist, blend the timing sentence and additional details naturally.
+- CRITICAL: In the JSON result, the "systems" field MUST strictly contain ONLY the system names (e.g., "SGBOM", "Protheus", "Fluig"). Do NOT append any GMUD numbers or references like "(GMUD 1840)" or "GMUD: 1840" to the systems field under any circumstances.
 
 Return the translations in a JSON format matching this schema:
 {
@@ -110,6 +121,10 @@ const INITIAL_WINDOW: MaintenanceWindow = {
   endDate: '2026-01-03',
   startTime: '23:00',
   endTime: '01:00',
+  additionalText: '',
+  showStandardText: true,
+  gmud: '',
+  type: 'outage'
 };
 
 const INITIAL_DATA: MemoData = {
@@ -120,7 +135,7 @@ const INITIAL_DATA: MemoData = {
     footerLine2: 'Suporte Técnico Especializado',
     headerImage: '',
     footerImage: '',
-    customPrompt: DEFAULT_PROMPT
+    customPrompt: ''
   },
   customIntro: 'Informamos que realizaremos uma manutenção técnica essencial para garantir a estabilidade e performance de nossa infraestrutura digital.',
   customTitlePt: 'Parada Programada'
@@ -209,14 +224,22 @@ const formatDateLong = (dateStr: string) => {
 const formatWindowFullTextPt = (window: MaintenanceWindow) => {
   const startDay = getDayOfWeek(window.startDate);
   const startDate = formatDateLong(window.startDate);
+  let text = '';
   
-  if (window.startDate === window.endDate || !window.endDate) {
-    return `${startDate} (${startDay}) iniciando às ${window.startTime}h com previsão de término para às ${window.endTime}h.`;
-  } else {
-    const endDay = getDayOfWeek(window.endDate);
-    const endDate = formatDateLong(window.endDate);
-    return `Iniciando em ${startDate} (${startDay}) às ${window.startTime}h com previsão de término para ${endDate} (${endDay}) às ${window.endTime}h.`;
+  if (window.showStandardText !== false) {
+    if (window.startDate === window.endDate || !window.endDate) {
+      text = `${startDate} (${startDay}) iniciando às ${window.startTime}h com previsão de término para às ${window.endTime}h.`;
+    } else {
+      const endDay = getDayOfWeek(window.endDate);
+      const endDate = formatDateLong(window.endDate);
+      text = `Iniciando em ${startDate} (${startDay}) às ${window.startTime}h com previsão de término para ${endDate} (${endDay}) às ${window.endTime}h.`;
+    }
   }
+
+  if (window.additionalText) {
+    text += (text ? ' ' : '') + window.additionalText;
+  }
+  return text;
 };
 
 const formatWindowDateRange = (startDate: string, endDate: string) => {
@@ -249,11 +272,54 @@ const formatWindowDateRange = (startDate: string, endDate: string) => {
   return `De ${startDayOfWeek}, ${startDay} a ${endDayOfWeek}, ${endFull}`;
 };
 
+const calculateWindowDuration = (window: MaintenanceWindow) => {
+  if (!window.startDate || !window.startTime || !window.endTime) return 'N/A';
+  try {
+    const startDateTime = new Date(`${window.startDate}T${window.startTime}`);
+    const endDateTime = new Date(`${window.endDate || window.startDate}T${window.endTime}`);
+    
+    let diffMs = endDateTime.getTime() - startDateTime.getTime();
+    if (diffMs < 0) {
+      if (window.startDate === window.endDate || !window.endDate) {
+        const nextDay = new Date(window.startDate + 'T12:00:00');
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextDayStr = nextDay.toISOString().split('T')[0];
+        const adjustedEnd = new Date(`${nextDayStr}T${window.endTime}`);
+        diffMs = adjustedEnd.getTime() - startDateTime.getTime();
+      }
+    }
+    
+    if (diffMs < 0) return 'N/A';
+    
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    
+    if (hours === 0) {
+      return `${mins} min`;
+    } else if (mins === 0) {
+      return `${hours}h`;
+    } else {
+      return `${hours}h ${mins}m`;
+    }
+  } catch (e) {
+    return 'N/A';
+  }
+};
+
 export default function ITMemoGenerator() {
   const [data, setData] = useState<MemoData>(INITIAL_DATA);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [hasGeneratedCurrent, setHasGeneratedCurrent] = useState(false);
+
+  useEffect(() => {
+    setHasGeneratedCurrent(false);
+  }, [data]);
   const [activeSection, setActiveSection] = useState<Section>('editor');
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+  const [historyFilterType, setHistoryFilterType] = useState<'all' | 'outage' | 'communication'>('all');
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [translations, setTranslations] = useState<TranslatedContent | null>(null);
   const [templates, setTemplates] = useState<Template[]>(DEFAULT_TEMPLATES);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
@@ -268,11 +334,44 @@ export default function ITMemoGenerator() {
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  
+  const [systemOptions, setSystemOptions] = useState<string[]>(['Protheus', 'Fluig', 'SGBOM', 'Greendocs', 'Projuris', 'I.A']);
+  const [newSystemName, setNewSystemName] = useState<string>('');
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   }, []);
+
+  const handleAddSystem = () => {
+    const trimmed = newSystemName.trim();
+    if (!trimmed) return;
+    if (systemOptions.includes(trimmed)) {
+      showToast('Este sistema já está na lista!', 'error');
+      return;
+    }
+    const updated = [...systemOptions, trimmed];
+    setSystemOptions(updated);
+    localStorage.setItem('it-memo-system-options', JSON.stringify(updated));
+    setNewSystemName('');
+    showToast('Sistema adicionado com sucesso!');
+  };
+
+  const handleRemoveSystem = (sys: string) => {
+    const updated = systemOptions.filter(s => s !== sys);
+    setSystemOptions(updated);
+    localStorage.setItem('it-memo-system-options', JSON.stringify(updated));
+    
+    // Also remove this system from selected systems in all windows, to keep data clean
+    setData(prev => ({
+      ...prev,
+      windows: prev.windows.map(w => ({
+        ...w,
+        systems: w.systems.filter(s => s !== sys)
+      }))
+    }));
+    showToast(`Sistema "${sys}" removido das opções.`);
+  };
 
   useEffect(() => {
     // Load history
@@ -294,6 +393,11 @@ export default function ITMemoGenerator() {
       try {
         const settings = JSON.parse(savedSettings);
         if (settings && typeof settings === 'object') {
+          // Migration: If the custom prompt contains the old time format example or lacks Chinese 24h spec, clear it to use the new default
+          if (settings.customPrompt && (settings.customPrompt.includes('08:00h') || !settings.customPrompt.includes('24-hour'))) {
+            settings.customPrompt = '';
+            localStorage.setItem('it-memo-settings', JSON.stringify(settings));
+          }
           setData(prev => ({ ...prev, settings: { ...prev.settings, ...settings } }));
         }
       } catch (e) {
@@ -318,6 +422,19 @@ export default function ITMemoGenerator() {
     const savedAutoTranslate = localStorage.getItem('it-memo-auto-translate');
     if (savedAutoTranslate !== null) {
       setAutoTranslate(savedAutoTranslate === 'true');
+    }
+
+    // Load system options
+    const savedSystems = localStorage.getItem('it-memo-system-options');
+    if (savedSystems) {
+      try {
+        const parsed = JSON.parse(savedSystems);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setSystemOptions(parsed);
+        }
+      } catch (e) {
+        console.error('Failed to parse system options', e);
+      }
     }
   }, []);
 
@@ -347,14 +464,56 @@ export default function ITMemoGenerator() {
 
   const saveToHistory = (memoData: MemoData) => {
     try {
+      // Check if an exactly identical record already exists in history
+      const isDuplicate = history.some(item => {
+        const itemData = item.data;
+        if ((itemData.customTitlePt || '') !== (memoData.customTitlePt || '')) return false;
+        if ((itemData.customIntro || '') !== (memoData.customIntro || '')) return false;
+        
+        const windows1 = memoData.windows || [];
+        const windows2 = itemData.windows || [];
+        if (windows1.length !== windows2.length) return false;
+        
+        for (let i = 0; i < windows1.length; i++) {
+          const w1 = windows1[i];
+          const w2 = windows2[i];
+          
+          if ((w1.type || 'outage') !== (w2.type || 'outage')) return false;
+          if ((w1.gmud || '') !== (w2.gmud || '')) return false;
+          if (w1.startDate !== w2.startDate) return false;
+          if (w1.endDate !== w2.endDate) return false;
+          if (w1.startTime !== w2.startTime) return false;
+          if (w1.endTime !== w2.endTime) return false;
+          if ((w1.additionalText || '') !== (w2.additionalText || '')) return false;
+          if ((w1.showStandardText !== false) !== (w2.showStandardText !== false)) return false;
+          
+          const systems1 = w1.systems || [];
+          const systems2 = w2.systems || [];
+          if (systems1.length !== systems2.length) return false;
+          
+          const sortedSys1 = [...systems1].sort();
+          const sortedSys2 = [...systems2].sort();
+          for (let j = 0; j < sortedSys1.length; j++) {
+            if (sortedSys1[j] !== sortedSys2[j]) return false;
+          }
+        }
+        
+        return true;
+      });
+
+      if (isDuplicate) {
+        console.log('Record is duplicate, skipping history save.');
+        return;
+      }
+
       const newItem: HistoryItem = {
         id: Math.random().toString(36).substring(2, 11),
         timestamp: Date.now(),
         data: JSON.parse(JSON.stringify(memoData))
       };
       
-      // Reduce history size to 10 to save space
-      let updatedHistory = [newItem, ...history].slice(0, 10);
+      // Keep up to 150 items to support audit log searches
+      let updatedHistory = [newItem, ...history].slice(0, 150);
       
       const trySave = (items: HistoryItem[]): boolean => {
         try {
@@ -385,6 +544,55 @@ export default function ITMemoGenerator() {
       localStorage.setItem('it-memo-history', JSON.stringify(updatedHistory));
     } catch (e) {
       console.error('Failed to delete history item', e);
+    }
+  };
+
+  const exportHistoryToCSV = () => {
+    if (history.length === 0) {
+      showToast('Nenhum log para exportar!', 'error');
+      return;
+    }
+
+    try {
+      // CSV Headers using semicolon separator for Latin/Excel compatibility
+      let csvContent = 'Data do Registro;Número da GMUD;Tipo de Janela;Sistemas Impactados;Data de Início;Hora de Início;Data de Término;Hora de Término;Duração da Janela;Título do Comunicado\r\n';
+
+      history.forEach((item) => {
+        const registrationDate = new Date(item.timestamp).toLocaleString('pt-BR');
+        const title = item.data.customTitlePt || 'Parada Programada';
+        
+        (item.data.windows || []).forEach((w) => {
+          const gmud = w.type === 'communication' ? 'N/A (Comunicação)' : (w.gmud || 'Sem GMUD');
+          const typeStr = w.type === 'communication' ? 'Apenas Comunicação' : 'Parada de Sistema';
+          const systems = (w.systems || []).join(', ');
+          const startDate = w.startDate || '';
+          const startTime = w.startTime || '';
+          const endDate = w.endDate || startDate;
+          const endTime = w.endTime || '';
+          const duration = calculateWindowDuration(w);
+
+          // Escape values to avoid CSV breakage
+          const escapedTitle = title.replace(/"/g, '""');
+          const escapedSystems = systems.replace(/"/g, '""');
+
+          csvContent += `"${registrationDate}";"${gmud}";"${typeStr}";"${escapedSystems}";"${startDate}";"${startTime}";"${endDate}";"${endTime}";"${duration}";"${escapedTitle}"\r\n`;
+        });
+      });
+
+      // UTF-8 with BOM for proper Excel encoding
+      const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `log_comunicados_auditoria_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      showToast('Logs de auditoria exportados com sucesso em CSV!');
+    } catch (e) {
+      console.error('Failed to export CSV', e);
+      showToast('Erro ao exportar logs em CSV.', 'error');
     }
   };
 
@@ -478,6 +686,7 @@ export default function ITMemoGenerator() {
       endDate: '',
       startTime: '',
       endTime: '',
+      type: 'outage'
     };
     setData(prev => ({ ...prev, windows: [...prev.windows, newWindow] }));
   };
@@ -525,6 +734,13 @@ export default function ITMemoGenerator() {
   const handleGenerateTranslations = useCallback(async (retryCount = 0, force = false) => {
     const currentData = dataRef.current;
     if (currentData.windows.every(w => w.systems.length === 0)) return;
+    
+    const hasEmptyGmud = currentData.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    if (hasEmptyGmud) {
+      if (force) showToast("Por favor, preencha o número da GMUD em todas as janelas de parada de sistema para habilitar a tradução!", "error");
+      return;
+    }
+
     if (!autoTranslateRef.current && !force) return;
     
     // Create a unique key for the current content to avoid redundant calls
@@ -533,25 +749,21 @@ export default function ITMemoGenerator() {
       customIntro: currentData.customIntro || INITIAL_DATA.customIntro,
       customTitlePt: currentData.customTitlePt || INITIAL_DATA.customTitlePt,
       customPrompt: currentData.settings.customPrompt,
+      googleApiKey: currentData.settings.googleApiKey,
       openaiApiKey: currentData.settings.openaiApiKey
     });
     
     if (currentDataKey === lastTranslatedDataRef.current && !force) return;
     if (isTranslatingRef.current && retryCount === 0) return;
-    
-    const geminiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    const openaiKey = currentData.settings.openaiApiKey;
-    
-    if (!geminiKey && !openaiKey) {
-      console.warn("AI API key is missing. Translation skipped.");
-      if (force) showToast("Chave de API não configurada. Verifique as configurações.", "error");
-      return;
-    }
 
     setIsTranslating(true);
     try {
       const prompt = `
         ${currentData.settings.customPrompt || DEFAULT_PROMPT}
+
+        CRITICAL INSTRUCTION FOR THE "systems" FIELD:
+        - The "systems" field in the translated result MUST strictly contain ONLY the translated or original system names (e.g., "SGBOM", "Protheus", "Fluig").
+        - Under no circumstances should you append any GMUD numbers or references like "(GMUD 1840)" or "GMUD: 1840" to the systems field. Keep the systems field perfectly clean.
 
         Data to translate:
         Title: "${currentData.customTitlePt || INITIAL_DATA.customTitlePt}"
@@ -562,85 +774,43 @@ export default function ITMemoGenerator() {
         ${currentData.windows.map((w, i) => `
         Window ${i + 1}:
         Systems: ${(w.systems || []).join('/')}
+        GMUD: ${w.gmud || ''}
         Start Date: ${w.startDate}
         End Date: ${w.endDate}
         Time: from ${w.startTime} to ${w.endTime}
+        Include Standard Text: ${w.showStandardText !== false}
+        Additional Info: ${w.additionalText || ''}
         `).join('\n')}
       `;
 
-      let responseText = "";
+      const response = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentData, prompt })
+      });
 
-      if (openaiKey) {
-        // Use ChatGPT
-        const { OpenAI } = await import('openai');
-        const openai = new OpenAI({ apiKey: openaiKey, dangerouslyAllowBrowser: true });
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: "You are a helpful assistant that translates IT maintenance memos." },
-            { role: "user", content: prompt }
-          ],
-          response_format: { type: "json_object" }
-        });
-        responseText = completion.choices[0].message.content || "";
-      } else {
-        // Use Gemini
-        const ai = new GoogleGenAI({ apiKey: geminiKey! });
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                en: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    intro: { type: Type.STRING },
-                    warning: { type: Type.STRING },
-                    windows: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          systems: { type: Type.STRING },
-                          text: { type: Type.STRING }
-                        }
-                      }
-                    }
-                  }
-                },
-                zh: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    intro: { type: Type.STRING },
-                    warning: { type: Type.STRING },
-                    windows: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          systems: { type: Type.STRING },
-                          text: { type: Type.STRING }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        });
-        responseText = response.text || "";
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Erro ${response.status} na tradução`);
       }
 
-      if (responseText) {
-        // Clean up response text in case of markdown wrappers
-        const cleanedText = responseText.replace(/```json\n?|\n?```/g, '').trim();
-        const result = JSON.parse(cleanedText);
+      const result = await response.json();
+
+      if (result) {
+        // Sanitize translated system names to remove any accidental GMUD repetitions
+        if (result.en && Array.isArray(result.en.windows)) {
+          result.en.windows = result.en.windows.map((w: any) => ({
+            ...w,
+            systems: w.systems ? w.systems.replace(/\s*\(?GMUD\s*[:\-\d\s]*\)?/gi, '').trim() : ''
+          }));
+        }
+        if (result.zh && Array.isArray(result.zh.windows)) {
+          result.zh.windows = result.zh.windows.map((w: any) => ({
+            ...w,
+            systems: w.systems ? w.systems.replace(/\s*\(?GMUD\s*[:\-\d\s]*\)?/gi, '').trim() : ''
+          }));
+        }
+
         setTranslations(result);
         lastTranslatedDataRef.current = currentDataKey;
         if (force) showToast("Tradução concluída com sucesso!");
@@ -660,7 +830,7 @@ export default function ITMemoGenerator() {
         }
         showToast("Limite de requisições atingido. Tente novamente em instantes.", "error");
       } else {
-        showToast("Falha na tradução. Verifique sua conexão e chaves de API.", "error");
+        showToast(errorMsg || "Falha na tradução. Verifique suas chaves de API nas configurações.", "error");
       }
     } finally {
       if (retryCount === 0 || retryCount >= 3) {
@@ -686,15 +856,26 @@ export default function ITMemoGenerator() {
   };
 
   const handleGenerate = () => {
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    if (hasEmptyGmud) {
+      showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema!', 'error');
+      return;
+    }
     setIsGenerating(true);
     saveToHistory(data);
     setTimeout(() => {
       setIsGenerating(false);
+      setHasGeneratedCurrent(true);
       // Optional: auto-download or show success
     }, 1500);
   };
 
   const handleCopyText = async () => {
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    if (hasEmptyGmud) {
+      showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema!', 'error');
+      return;
+    }
     let text = `
 COMUNICADO DE MANUTENÇÃO PROGRAMADA
 -----------------------------------
@@ -722,7 +903,7 @@ Dear colleagues,
 ${translations.en.intro}
 
 MAINTENANCE WINDOWS:
-${Array.isArray(translations.en.windows) ? translations.en.windows.map(w => `
+${Array.isArray(translations.en.windows) ? translations.en.windows.map((w, idx) => `
 - SYSTEMS: ${w.systems}
   ${w.text}
 `).join('') : ''}
@@ -733,7 +914,7 @@ ${translations.zh.title}
 ${translations.zh.intro}
 
 维护窗口：
-${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
+${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) => `
 - 系统: ${w.systems}
   ${w.text}
 `).join('') : ''}
@@ -750,7 +931,17 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
   };
 
   const handleDownloadImage = async () => {
+    if (!hasGeneratedCurrent) {
+      showToast('Por favor, clique em "Gerar Comunicado" primeiro para habilitar o download!', 'error');
+      return;
+    }
     if (!previewRef.current) return;
+    
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    if (hasEmptyGmud) {
+      showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema antes de baixar a imagem!', 'error');
+      return;
+    }
     
     setIsGenerating(true);
     
@@ -912,7 +1103,7 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
           />
           <NavItem 
             icon={<History size={18} />} 
-            label="Histórico" 
+            label="Logs & Auditoria" 
             active={activeSection === 'history'} 
             onClick={() => {
               setActiveSection('history');
@@ -1060,25 +1251,66 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                             {/* Systems */}
                             <div>
                               <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] mb-3">Sistemas Impactados</label>
-                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                                {(['Protheus', 'Fluig', 'SGBOM', 'Greendocs', 'Projuris'] as System[]).map(sys => (
-                                  <button
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                                {systemOptions.map(sys => (
+                                  <div
                                     key={sys}
-                                    onClick={() => toggleSystem(window.id, sys)}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-sm transition-all text-left border ${
-                                      window.systems.includes(sys)
-                                        ? 'bg-primary/5 border-primary/20 text-primary'
-                                        : 'bg-white border-transparent hover:bg-surface-container-high text-on-surface-variant'
-                                    }`}
+                                    className="group/sys relative flex items-center"
                                   >
-                                    <div className={`w-3 h-3 rounded-sm border flex items-center justify-center transition-colors ${
-                                      window.systems.includes(sys) ? 'bg-primary border-primary' : 'bg-white border-outline-variant'
-                                    }`}>
-                                      {window.systems.includes(sys) && <Check size={10} className="text-white" />}
-                                    </div>
-                                    <span className="text-[14px] font-medium">{sys}</span>
-                                  </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleSystem(window.id, sys)}
+                                      className={`flex-1 flex items-center gap-2 px-3 py-2 rounded-sm transition-all text-left border ${
+                                        window.systems.includes(sys)
+                                          ? 'bg-primary/5 border-primary/20 text-primary'
+                                          : 'bg-white border-transparent hover:bg-surface-container-high text-on-surface-variant'
+                                      }`}
+                                    >
+                                      <div className={`w-3 h-3 rounded-sm border flex items-center justify-center transition-colors ${
+                                        window.systems.includes(sys) ? 'bg-primary border-primary' : 'bg-white border-outline-variant'
+                                      }`}>
+                                        {window.systems.includes(sys) && <Check size={10} className="text-white" />}
+                                      </div>
+                                      <span className="text-[14px] font-medium pr-6 truncate">{sys}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRemoveSystem(sys);
+                                      }}
+                                      className="absolute right-2 opacity-0 group-hover/sys:opacity-100 hover:text-tertiary transition-opacity p-1.5 rounded-full hover:bg-black/5 text-on-surface-variant/40"
+                                      title="Excluir sistema"
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  </div>
                                 ))}
+                              </div>
+
+                              {/* Adicionar novo sistema */}
+                              <div className="flex gap-2 max-w-sm mt-3">
+                                <input
+                                  type="text"
+                                  placeholder="Novo sistema..."
+                                  value={newSystemName}
+                                  onChange={(e) => setNewSystemName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleAddSystem();
+                                    }
+                                  }}
+                                  className="flex-grow px-3 py-1.5 bg-white border border-outline-variant/10 rounded-sm text-[13px] font-medium outline-none focus:ring-1 focus:ring-primary/20"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleAddSystem}
+                                  className="px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-[13px] rounded-sm transition-all flex items-center gap-1 shrink-0"
+                                >
+                                  <Plus size={14} />
+                                  Adicionar
+                                </button>
                               </div>
                             </div>
 
@@ -1136,6 +1368,87 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                                     />
                                   </div>
                                 </div>
+                              </div>
+
+                              {/* Tipo de Janela: Parada de Sistema vs Apenas Comunicação */}
+                              <div>
+                                <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] mb-2">Tipo de Janela</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateWindow(window.id, { type: 'outage' })}
+                                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-sm text-[13px] font-bold border transition-all ${
+                                      (window.type === undefined || window.type === 'outage')
+                                        ? 'bg-primary/5 border-primary/20 text-primary'
+                                        : 'bg-white border-transparent hover:bg-surface-container-high text-on-surface-variant'
+                                    }`}
+                                  >
+                                    <Layout size={14} />
+                                    Parada de Sistema
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateWindow(window.id, { type: 'communication' })}
+                                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-sm text-[13px] font-bold border transition-all ${
+                                      window.type === 'communication'
+                                        ? 'bg-primary/5 border-primary/20 text-primary'
+                                        : 'bg-white border-transparent hover:bg-surface-container-high text-on-surface-variant'
+                                    }`}
+                                  >
+                                    <FileText size={14} />
+                                    Apenas Comunicação
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Número da GMUD */}
+                              <div>
+                                <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] mb-2 flex items-center gap-1">
+                                  Número da GMUD{' '}
+                                  {window.type !== 'communication' ? (
+                                    <span className="text-tertiary font-bold text-[13px] leading-none" title="Obrigatório">*</span>
+                                  ) : (
+                                    <span className="text-on-surface-variant/50 font-normal text-[10px] lowercase tracking-normal">(Opcional)</span>
+                                  )}
+                                </label>
+                                <div className="relative group">
+                                  <FileText className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors ${((window.type !== 'communication') && (!window.gmud || !window.gmud.trim())) ? 'text-tertiary' : 'text-on-surface-variant group-focus-within:text-primary'}`} size={16} />
+                                  <input 
+                                    type="text"
+                                    placeholder="Ex: GMUD-12345"
+                                    value={window.gmud || ''}
+                                    required={window.type !== 'communication'}
+                                    onChange={(e) => updateWindow(window.id, { gmud: e.target.value })}
+                                    className={`w-full pl-10 pr-4 py-2 bg-white rounded-sm transition-all text-[14px] font-medium outline-none border ${
+                                      ((window.type !== 'communication') && (!window.gmud || !window.gmud.trim()))
+                                        ? 'border-tertiary/40 focus:ring-1 focus:ring-tertiary/20'
+                                        : 'border-transparent focus:ring-1 focus:ring-primary/20'
+                                    }`}
+                                  />
+                                </div>
+                                {((window.type !== 'communication') && (!window.gmud || !window.gmud.trim())) && (
+                                  <span className="text-[11px] text-tertiary font-semibold mt-1.5 block">
+                                    Este campo é obrigatório
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 mb-4 cursor-pointer select-none" onClick={() => updateWindow(window.id, { showStandardText: window.showStandardText !== false ? false : true })}>
+                                <div className={`w-8 h-4 rounded-full relative transition-colors ${window.showStandardText !== false ? 'bg-primary' : 'bg-outline-variant/30'}`}>
+                                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${window.showStandardText !== false ? 'left-4.5' : 'left-0.5'}`} />
+                                </div>
+                                <span className="text-[12px] font-bold text-on-surface-variant uppercase tracking-wider">Incluir texto padrão</span>
+                              </div>
+
+                              {/* Additional Info */}
+                              <div>
+                                <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] mb-2">Detalhes Adicionais (Opcional)</label>
+                                <textarea
+                                  value={window.additionalText || ''}
+                                  onChange={(e) => updateWindow(window.id, { additionalText: e.target.value })}
+                                  placeholder="Ex: Atualização do banco de dados, Reboot do servidor..."
+                                  className="w-full px-4 py-3 bg-white border-none rounded-sm focus:ring-1 focus:ring-primary/20 transition-all text-[14px] font-medium outline-none h-20 resize-none"
+                                />
                               </div>
                             </div>
                           </div>
@@ -1396,7 +1709,20 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em]">Google Gemini API Key (Opcional)</label>
+                          <input 
+                            type="password" 
+                            value={data.settings.googleApiKey || ''}
+                            onChange={(e) => updateSettings({ googleApiKey: e.target.value })}
+                            placeholder="AIzaSy..."
+                            className="w-full px-4 py-2 bg-white border border-outline-variant/10 rounded-xl focus:ring-1 focus:ring-primary/20 transition-all text-[14px] font-medium outline-none"
+                          />
+                          <p className="text-[11px] text-on-surface-variant/60">
+                            Chave do Google Gemini. Se vazia, utiliza a chave configurada no servidor.
+                          </p>
+                        </div>
                         <div className="space-y-2">
                           <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em]">ChatGPT API Key (Opcional)</label>
                           <input 
@@ -1406,16 +1732,20 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                             placeholder="sk-..."
                             className="w-full px-4 py-2 bg-white border border-outline-variant/10 rounded-xl focus:ring-1 focus:ring-primary/20 transition-all text-[14px] font-medium outline-none"
                           />
+                          <p className="text-[11px] text-on-surface-variant/60">
+                            Caso prefira utilizar a API da OpenAI para traduções.
+                          </p>
                         </div>
-                        <div className="space-y-2">
-                          <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em]">Departamento</label>
-                          <input 
-                            type="text" 
-                            value={data.settings.department}
-                            onChange={(e) => updateSettings({ department: e.target.value })}
-                            className="w-full px-4 py-2 bg-white border border-outline-variant/10 rounded-xl focus:ring-1 focus:ring-primary/20 transition-all text-[14px] font-medium outline-none"
-                          />
-                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em]">Departamento</label>
+                        <input 
+                          type="text" 
+                          value={data.settings.department}
+                          onChange={(e) => updateSettings({ department: e.target.value })}
+                          className="w-full px-4 py-2 bg-white border border-outline-variant/10 rounded-xl focus:ring-1 focus:ring-primary/20 transition-all text-[14px] font-medium outline-none"
+                        />
                       </div>
 
                       <div className="space-y-2">
@@ -1440,12 +1770,73 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 20 }}
-                    className="space-y-8"
+                    className="space-y-6"
                   >
-                    <header className="mb-10">
-                      <h2 className="text-[31px] font-headline font-extrabold text-primary tracking-tight mb-2">Histórico de Envios</h2>
-                      <p className="text-on-surface-variant text-[16px]">Visualize e recupere comunicados gerados anteriormente.</p>
+                    <header className="mb-6">
+                      <h2 className="text-[31px] font-headline font-extrabold text-primary tracking-tight mb-2 font-bold text-primary">Logs & Auditoria</h2>
+                      <p className="text-on-surface-variant text-[16px]">Consulte o registro histórico de janelas, sistemas e GMUDs para suporte a auditorias.</p>
                     </header>
+
+                    {/* KPI Dashboard */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                      <div className="p-4 bg-slate-50 border border-outline-variant/10 rounded-2xl flex flex-col justify-center shadow-sm">
+                        <span className="text-on-surface-variant font-bold text-[10px] uppercase tracking-[0.15em]">Total Registrado</span>
+                        <span className="text-[24px] font-extrabold text-primary font-headline mt-1 font-black">{history.length}</span>
+                      </div>
+                      <div className="p-4 bg-slate-50 border border-outline-variant/10 rounded-2xl flex flex-col justify-center shadow-sm">
+                        <span className="text-on-surface-variant font-bold text-[10px] uppercase tracking-[0.15em]">Paradas de Sistema</span>
+                        <span className="text-[24px] font-extrabold text-primary font-headline mt-1 font-black">
+                          {history.filter(item => item.data.windows?.some(w => w.type !== 'communication')).length}
+                        </span>
+                      </div>
+                      <div className="p-4 bg-slate-50 border border-outline-variant/10 rounded-2xl flex flex-col justify-center shadow-sm">
+                        <span className="text-on-surface-variant font-bold text-[10px] uppercase tracking-[0.15em]">Apenas Comunicações</span>
+                        <span className="text-[24px] font-extrabold text-primary font-headline mt-1 font-black font-semibold">
+                          {history.filter(item => item.data.windows?.some(w => w.type === 'communication')).length}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Search & Action Controls */}
+                    <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between pb-4 border-b border-outline-variant/10">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/40" size={16} />
+                        <input
+                          type="text"
+                          value={historySearchQuery}
+                          onChange={(e) => setHistorySearchQuery(e.target.value)}
+                          placeholder="Buscar por GMUD, sistema, data, título..."
+                          className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-outline-variant/10 rounded-xl text-[14px] font-medium outline-none focus:ring-1 focus:ring-primary/20 transition-all"
+                        />
+                        {historySearchQuery && (
+                          <button
+                            onClick={() => setHistorySearchQuery('')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant/60 hover:text-on-surface text-[11px] font-bold uppercase tracking-wider"
+                          >
+                            Limpar
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={historyFilterType}
+                          onChange={(e: any) => setHistoryFilterType(e.target.value)}
+                          className="px-3 py-2 bg-slate-50 border border-outline-variant/10 rounded-xl text-[13px] font-bold text-on-surface-variant outline-none focus:ring-1 focus:ring-primary/20"
+                        >
+                          <option value="all">Todos os Tipos</option>
+                          <option value="outage">Paradas de Sistema</option>
+                          <option value="communication">Apenas Comunicação</option>
+                        </select>
+                        <button
+                          onClick={exportHistoryToCSV}
+                          className="flex items-center justify-center gap-2 px-4 py-2 bg-primary/10 hover:bg-primary/20 text-primary text-[13px] font-bold rounded-xl transition-all shadow-sm"
+                          title="Exportar logs para Excel"
+                        >
+                          <Download size={14} />
+                          <span>Exportar CSV</span>
+                        </button>
+                      </div>
+                    </div>
 
                     {history.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-[300px] text-center space-y-4 bg-slate-50 rounded-2xl border border-dashed border-outline-variant/20">
@@ -1458,42 +1849,215 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
                         </div>
                       </div>
                     ) : (
-                      <div className="grid gap-3">
-                        {history.map((item) => (
-                          <div
-                            key={item.id}
-                            className="flex items-center gap-4 p-4 bg-white border border-outline-variant/10 rounded-xl hover:border-primary/20 transition-all group"
-                          >
-                            <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center text-primary shrink-0">
-                              <FileText size={20} />
+                      (() => {
+                        const filteredHistory = history.filter((item) => {
+                          const query = historySearchQuery.trim().toLowerCase();
+                          const matchesQuery = !query ? true : (
+                            (item.data.customTitlePt || '').toLowerCase().includes(query) ||
+                            (item.data.windows || []).some(w => 
+                              (w.gmud || '').toLowerCase().includes(query) ||
+                              (w.systems || []).some(sys => sys.toLowerCase().includes(query)) ||
+                              (w.startDate || '').includes(query) ||
+                              (w.endDate || '').includes(query) ||
+                              (w.additionalText || '').toLowerCase().includes(query)
+                            )
+                          );
+
+                          const matchesType = historyFilterType === 'all' ? true : (
+                            item.data.windows.some(w => {
+                              const wType = w.type || 'outage';
+                              return wType === historyFilterType;
+                            })
+                          );
+
+                          return matchesQuery && matchesType;
+                        });
+
+                        if (filteredHistory.length === 0) {
+                          return (
+                            <div className="flex flex-col items-center justify-center h-[240px] text-center space-y-3 bg-slate-50 rounded-2xl border border-dashed border-outline-variant/20">
+                              <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center text-slate-300 shadow-sm">
+                                <Search size={20} />
+                              </div>
+                              <div>
+                                <h4 className="font-headline font-bold text-on-surface text-[15px] font-bold">Nenhum registro encontrado</h4>
+                                <p className="text-on-surface-variant text-[13px] mt-1">Nenhum log corresponde aos filtros e termos digitados.</p>
+                              </div>
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <h3 className="font-headline font-bold text-on-surface text-[16px] truncate">
-                                {(item.data.windows[0].systems || []).join(', ') || 'Sem sistemas'}
-                              </h3>
-                              <p className="text-[13px] text-on-surface-variant">
-                                {new Date(item.timestamp).toLocaleString('pt-BR')}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button 
-                                onClick={() => applyHistoryItem(item)}
-                                className="p-2 hover:bg-primary/10 text-primary rounded-lg transition-colors"
-                                title="Restaurar"
-                              >
-                                <RotateCcw size={16} />
-                              </button>
-                              <button 
-                                onClick={() => deleteHistoryItem(item.id)}
-                                className="p-2 hover:bg-tertiary/10 text-tertiary rounded-lg transition-colors"
-                                title="Excluir"
-                              >
-                                <RotateCcw size={16} className="rotate-45" />
-                              </button>
-                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-3">
+                            {filteredHistory.map((item) => {
+                              const isExpanded = expandedHistoryId === item.id;
+                              return (
+                                <div 
+                                  key={item.id} 
+                                  className={`bg-white border rounded-2xl transition-all overflow-hidden ${
+                                    isExpanded ? 'border-primary/35 shadow-md shadow-primary/5' : 'border-outline-variant/10 hover:border-primary/10 shadow-sm'
+                                  }`}
+                                >
+                                  {/* Item Summary Row */}
+                                  <div 
+                                    onClick={() => setExpandedHistoryId(isExpanded ? null : item.id)}
+                                    className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 gap-3 cursor-pointer hover:bg-slate-50/40 transition-colors select-none"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                                      <div className="w-10 h-10 rounded-xl bg-primary/5 flex items-center justify-center text-primary shrink-0">
+                                        <FileText size={18} />
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                                          <span className="text-[13px] font-bold text-primary font-headline">
+                                            {new Date(item.timestamp).toLocaleString('pt-BR')}
+                                          </span>
+                                          <span className="text-on-surface-variant/40 text-[11px] font-medium hidden sm:inline">•</span>
+                                          <span className="text-on-surface-variant text-[13px] font-medium truncate max-w-[200px] sm:max-w-none">
+                                            {item.data.customTitlePt || 'Parada Programada'}
+                                          </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          {(item.data.windows || []).map((w, idx) => (
+                                            <div key={idx} className="flex items-center gap-1.5 bg-slate-50 px-2 py-0.5 rounded-sm border border-outline-variant/5">
+                                              <span className="text-[12px] font-bold text-on-surface">
+                                                {(w.systems || []).join('/')}
+                                              </span>
+                                              <span className={`text-[9px] font-extrabold px-1 py-0.2 rounded-sm uppercase ${
+                                                w.type === 'communication' 
+                                                  ? 'bg-blue-50 text-blue-600 border border-blue-100' 
+                                                  : 'bg-red-50 text-red-600 border border-red-100'
+                                              }`}>
+                                                {w.type === 'communication' ? 'Comunicação' : 'Parada'}
+                                              </span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 self-stretch sm:self-center justify-end shrink-0">
+                                      <div className="flex flex-wrap items-center gap-1">
+                                        {(item.data.windows || []).map((w, idx) => {
+                                          if (w.type === 'communication') return null;
+                                          return (
+                                            <span 
+                                              key={idx} 
+                                              className="bg-primary/10 text-primary text-[10px] font-black px-1.5 py-0.5 rounded-sm uppercase tracking-wider"
+                                            >
+                                              {w.gmud || 'Sem GMUD'}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                      <div className="h-6 w-px bg-outline-variant/20 mx-1 hidden sm:block"></div>
+                                      <div className="flex items-center gap-1">
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            applyHistoryItem(item);
+                                          }}
+                                          className="p-2 hover:bg-primary/10 text-primary rounded-lg transition-colors"
+                                          title="Restaurar este comunicado como rascunho"
+                                        >
+                                          <RotateCcw size={15} />
+                                        </button>
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            deleteHistoryItem(item.id);
+                                          }}
+                                          className="p-2 hover:bg-tertiary/10 text-tertiary rounded-lg transition-colors"
+                                          title="Excluir do log"
+                                        >
+                                          <RotateCcw size={15} className="rotate-45" />
+                                        </button>
+                                        <ChevronRight className={`text-on-surface-variant/40 transition-transform duration-200 ${isExpanded ? 'rotate-90 text-primary' : ''}`} size={16} />
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Expanded Item Audit Specs */}
+                                  {isExpanded && (
+                                    <motion.div
+                                      initial={{ height: 0, opacity: 0 }}
+                                      animate={{ height: 'auto', opacity: 1 }}
+                                      exit={{ height: 0, opacity: 0 }}
+                                      className="border-t border-outline-variant/10 bg-slate-50/50 p-4 sm:p-5 space-y-4 text-[13px]"
+                                    >
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {/* Parametros de Auditoria */}
+                                        <div className="space-y-3 bg-white p-4 rounded-xl border border-outline-variant/10 shadow-sm">
+                                          <h4 className="text-[12px] font-bold text-primary uppercase tracking-[0.1em] border-b border-primary/10 pb-1.5 flex items-center justify-between">
+                                            <span>Parâmetros de Auditoria</span>
+                                            <span className="text-on-surface-variant/50 font-normal lowercase tracking-normal">({item.data.windows?.length || 0} Janela(s))</span>
+                                          </h4>
+                                          {(item.data.windows || []).map((w, idx) => (
+                                            <div key={idx} className="space-y-1.5 text-on-surface-variant border-b border-slate-50 last:border-b-0 pb-3 last:pb-0">
+                                              <p className="flex justify-between">
+                                                <strong className="text-on-surface">Janela #{idx + 1}:</strong>
+                                                <span className="font-bold text-primary">{(w.systems || []).join(', ')}</span>
+                                              </p>
+                                              <p className="flex justify-between">
+                                                <span>Tipo de Janela:</span>
+                                                <span className="font-medium text-on-surface">{w.type === 'communication' ? 'Apenas Comunicação' : 'Parada de Sistema'}</span>
+                                              </p>
+                                              <p className="flex justify-between">
+                                                <span>Número da GMUD:</span>
+                                                <span className="font-mono font-bold text-on-surface bg-slate-100 px-1 py-0.5 rounded text-[11px]">{w.type === 'communication' ? 'N/A' : (w.gmud || 'Não Informado')}</span>
+                                              </p>
+                                              <p className="flex justify-between">
+                                                <span>Período:</span>
+                                                <span className="font-medium text-on-surface text-right">
+                                                  {formatWindowDateRange(w.startDate, w.endDate)}
+                                                </span>
+                                              </p>
+                                              <p className="flex justify-between">
+                                                <span>Horário:</span>
+                                                <span className="font-medium text-on-surface">das {w.startTime} às {w.endTime}</span>
+                                              </p>
+                                              <p className="flex justify-between">
+                                                <span>Tempo de Janela (Duração):</span>
+                                                <span className="font-extrabold text-primary">{calculateWindowDuration(w)}</span>
+                                              </p>
+                                              {w.additionalText && (
+                                                <div className="bg-slate-50 p-2 rounded mt-1.5">
+                                                  <span className="text-[10px] font-bold text-on-surface-variant block uppercase tracking-wider mb-0.5">Detalhes Adicionais:</span>
+                                                  <span className="text-on-surface-variant text-[12px]">{w.additionalText}</span>
+                                                </div>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+
+                                        {/* Informações Gerais */}
+                                        <div className="space-y-3 bg-white p-4 rounded-xl border border-outline-variant/10 shadow-sm flex flex-col justify-between">
+                                          <div>
+                                            <h4 className="text-[12px] font-bold text-primary uppercase tracking-[0.1em] border-b border-primary/10 pb-1.5">Texto de Introdução</h4>
+                                            <p className="text-on-surface-variant leading-relaxed italic mt-2 text-[12.5px]">
+                                              {"\""}{item.data.customIntro || 'Prezados colaboradores, gostaríamos de informar que...'}{"\""}
+                                            </p>
+                                          </div>
+                                          <div className="pt-3 border-t border-slate-100 flex flex-wrap gap-2 justify-between items-center text-[11px] text-on-surface-variant/60">
+                                            <div>
+                                              <span>Gerente Responsável: </span>
+                                              <strong className="text-on-surface">{item.data.settings?.manager || 'Não definido'}</strong>
+                                            </div>
+                                            <div>
+                                              <span>Departamento: </span>
+                                              <strong className="text-on-surface">{item.data.settings?.department || 'TI'}</strong>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })()
                     )}
                   </motion.div>
                 )}
@@ -1664,7 +2228,13 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map(w => `
           <div className="flex flex-wrap items-center justify-center gap-2">
             <ActionButton icon={<RotateCcw size={16} />} label="Resetar" onClick={handleReset} />
             <ActionButton icon={<Copy size={16} />} label="Copiar Texto" onClick={handleCopyText} />
-            <ActionButton icon={<ImageIcon size={16} />} label="Baixar Imagem" onClick={handleDownloadImage} />
+            <ActionButton 
+              icon={<ImageIcon size={16} />} 
+              label="Baixar Imagem" 
+              onClick={handleDownloadImage} 
+              disabled={!hasGeneratedCurrent}
+              title={!hasGeneratedCurrent ? "Clique em 'Gerar Comunicado' primeiro para liberar o download" : "Baixar comunicado como imagem"}
+            />
           </div>
 
           <div className="flex items-center gap-4 lg:gap-6">
@@ -1939,11 +2509,13 @@ function NavItem({ icon, label, active = false, onClick }: { icon: React.ReactNo
   );
 }
 
-function ActionButton({ icon, label, onClick }: { icon: React.ReactNode, label: string, onClick?: () => void }) {
+function ActionButton({ icon, label, onClick, disabled = false, title }: { icon: React.ReactNode, label: string, onClick?: () => void, disabled?: boolean, title?: string }) {
   return (
     <button 
       onClick={onClick}
-      className="flex items-center gap-2 px-4 py-2 text-on-surface-variant hover:text-primary font-headline text-[13px] font-bold transition-all hover:bg-surface-container-low rounded-lg group"
+      disabled={disabled}
+      title={title}
+      className="flex items-center gap-2 px-4 py-2 text-on-surface-variant hover:text-primary font-headline text-[13px] font-bold transition-all hover:bg-surface-container-low rounded-lg group disabled:opacity-40 disabled:hover:text-on-surface-variant disabled:hover:bg-transparent disabled:cursor-not-allowed"
     >
       <span className="group-hover:scale-110 transition-transform">{icon}</span>
       {label}
