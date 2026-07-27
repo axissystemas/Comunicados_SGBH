@@ -97,6 +97,7 @@ interface HistoryItem {
 
 const DEFAULT_PROMPT = `Translate the following IT maintenance memo into professional American English (en-US) and Simplified Chinese (zh-CN).
 
+<<<<<<< HEAD
 Language Guidelines:
 1. English (en-US): Use standard American English spelling and formatting (e.g. Month Day, Year like "January 2, 2026", 12-hour AM/PM format like "11:00 PM to 1:00 AM").
 2. Simplified Chinese (zh-CN): Use standard Simplified Chinese (简体中文) for corporate IT communications (e.g. "YYYY年M月D日", 24-hour time like "23:00 至 01:00").
@@ -107,6 +108,18 @@ Instructions for Maintenance Windows:
 - If "Include Standard Text" is false, ONLY use the additional details text for the window description.
 - If "Include Standard Text" is true and additional details exist, blend the timing sentence and additional details naturally.
 - CRITICAL: In the JSON result, the "systems" field MUST strictly contain ONLY the system names (e.g., "SGBOM", "Protheus", "Fluig"). Do NOT append any GMUD numbers or references like "(GMUD 1840)" or "GMUD: 1840" to the systems field under any circumstances.
+=======
+Instructions for Windows:
+- Use a descriptive sentence format.
+- For English (en), use the 12-hour clock format (AM/PM) for times (e.g., 9:00 PM instead of 21:00h).
+- For Simplified Chinese (zh), use the 24-hour clock format for times (e.g., 21:00 instead of 9:00 PM).
+- If Start Date and End Date are the same, format for English like: "March 29, 2026 (Sunday) starting at 8:00 AM with an estimated completion by 12:00 PM."
+- If they are different, format for English like: "Starting on March 29 (Sunday) at 10:00 PM with an estimated completion on March 30 (Monday) at 4:00 AM."
+- IMPORTANT: If "Include Standard Text" is false, ONLY use the additional details/observation text for the window description. Do not include the timing sentence.
+- IMPORTANT: If "Include Standard Text" is true AND a window has additional details, integrate those details naturally into the descriptive sentence.
+- IMPORTANT: In the JSON result, the "systems" field must ONLY contain the translated or original system names (e.g., "SGBOM", "Protheus"). Do NOT append any GMUD numbers or references like "(GMUD 1840)" or "GMUD: 1840" to the systems field under any circumstances.
+- Translate these formats appropriately for English and Chinese, ensuring localized date and time conventions are followed.
+>>>>>>> 3026a03aa7f2d5d1938d1e68e4641e3111f9c05b
 
 Return the translations in a JSON format matching this schema:
 {
