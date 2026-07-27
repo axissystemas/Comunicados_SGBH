@@ -1497,59 +1497,70 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                 {activeSection === 'templates' && (
                   <motion.div
                     key="templates"
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 20 }}
-                    className="space-y-8"
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -15 }}
+                    className="space-y-8 max-w-4xl"
                   >
-                    <header className="mb-10 flex justify-between items-end">
+                    <header className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-8">
                       <div>
-                        <h2 className="text-[31px] font-headline font-extrabold text-primary tracking-tight mb-2">Modelos Prontos</h2>
-                        <p className="text-on-surface-variant text-[16px]">Escolha um modelo para começar rapidamente ou gerencie seus próprios.</p>
+                        <h2 className="text-[32px] font-headline font-extrabold text-[#004d40] tracking-tight mb-1.5">
+                          Modelos Prontos
+                        </h2>
+                        <p className="text-slate-600 text-[15px] max-w-xl leading-relaxed">
+                          Escolha um modelo para começar rapidamente ou gerencie seus próprios.
+                        </p>
                       </div>
+
                       <button 
                         onClick={() => {
                           setEditingTemplate(null);
                           setIsTemplateModalOpen(true);
                         }}
-                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-[14px] font-bold hover:bg-primary-container hover:text-primary transition-all shadow-lg shadow-primary/10"
+                        className="flex items-center justify-center gap-2 px-5 py-3.5 bg-[#005a4e] hover:bg-[#004d40] text-white rounded-xl font-headline font-bold text-[14px] transition-all shadow-md shadow-[#005a4e]/20 active:scale-95 shrink-0 self-start sm:self-auto"
                       >
-                        <Plus size={16} />
-                        Novo Modelo
+                        <Plus size={18} strokeWidth={2.5} />
+                        <span>Novo Modelo</span>
                       </button>
                     </header>
 
-                    <div className="grid gap-4">
+                    <div className="space-y-4">
                       {templates.map((template) => (
                         <div key={template.id} className="relative group/template">
                           <button
                             onClick={() => applyTemplate(template)}
-                            className="w-full flex items-start gap-4 p-5 bg-white border border-outline-variant/10 rounded-2xl hover:border-primary/30 hover:shadow-xl hover:shadow-primary/5 transition-all text-left group"
+                            className="w-full flex items-start sm:items-center gap-4 p-5 sm:p-6 bg-white border border-slate-200/80 rounded-2xl hover:border-[#005a4e]/30 hover:shadow-xl hover:shadow-[#005a4e]/5 transition-all text-left group"
                           >
-                            <div className="w-12 h-12 rounded-xl bg-primary/5 flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all">
-                              {ICON_MAP[template.iconType] || <Sparkles size={20} />}
+                            <div className="w-13 h-13 sm:w-14 sm:h-14 rounded-2xl bg-[#e6f4f1] flex items-center justify-center text-[#005a4e] shrink-0 group-hover:bg-[#005a4e] group-hover:text-white transition-all">
+                              {ICON_MAP[template.iconType] || <Sparkles size={22} />}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <h3 className="font-headline font-bold text-on-surface text-[16px]">{template.title}</h3>
-                              <p className="text-on-surface-variant text-[14px] mt-1 leading-relaxed line-clamp-2">{template.description}</p>
+
+                            <div className="flex-1 min-w-0 pr-8 sm:pr-12">
+                              <h3 className="font-headline font-bold text-slate-900 text-[17px] sm:text-[18px]">
+                                {template.title}
+                              </h3>
+                              <p className="text-slate-500 text-[13.5px] sm:text-[14px] mt-1 leading-relaxed line-clamp-2">
+                                {template.description}
+                              </p>
                               {template.data.customIntro && (
-                                <div className="mt-2 text-[11px] text-primary font-medium flex items-center gap-1">
-                                  <Sparkles size={10} />
-                                  Possui texto padrão personalizado
+                                <div className="mt-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-[#005a4e]">
+                                  <Sparkles size={13} className="text-[#005a4e]" />
+                                  <span>Possui texto padrão personalizado</span>
                                 </div>
                               )}
                             </div>
-                            <ChevronRight className="ml-auto text-outline-variant group-hover:text-primary transition-colors" size={18} />
+
+                            <ChevronRight className="ml-auto text-slate-300 group-hover:text-[#005a4e] group-hover:translate-x-1 transition-all shrink-0" size={20} />
                           </button>
-                          
-                          <div className="absolute top-4 right-12 flex items-center gap-1 opacity-0 group-hover/template:opacity-100 transition-opacity">
+
+                          <div className="absolute top-4 right-10 sm:right-12 flex items-center gap-1 opacity-0 group-hover/template:opacity-100 transition-opacity">
                             <button 
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setEditingTemplate(template);
                                 setIsTemplateModalOpen(true);
                               }}
-                              className="p-2 bg-white/80 backdrop-blur-sm border border-outline-variant/20 text-on-surface-variant hover:text-primary hover:bg-white rounded-lg shadow-sm transition-all"
+                              className="p-2 bg-white border border-slate-200 text-slate-600 hover:text-[#005a4e] hover:bg-slate-50 rounded-lg shadow-sm transition-all"
                               title="Editar Modelo"
                             >
                               <Edit3 size={14} />
@@ -1559,7 +1570,7 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                                 e.stopPropagation();
                                 handleDeleteTemplate(template.id);
                               }}
-                              className="p-2 bg-white/80 backdrop-blur-sm border border-outline-variant/20 text-on-surface-variant hover:text-tertiary hover:bg-white rounded-lg shadow-sm transition-all"
+                              className="p-2 bg-white border border-slate-200 text-slate-600 hover:text-red-600 hover:bg-slate-50 rounded-lg shadow-sm transition-all"
                               title="Excluir Modelo"
                             >
                               <Trash2 size={14} />
