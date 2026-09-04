@@ -41,6 +41,7 @@ interface MaintenanceWindow {
   additionalText?: string;
   showStandardText?: boolean;
   gmud?: string;
+  gmuds?: string[];
   type?: 'outage' | 'communication';
 }
 
@@ -137,6 +138,7 @@ const INITIAL_WINDOW: MaintenanceWindow = {
   additionalText: '',
   showStandardText: true,
   gmud: '',
+  gmuds: [],
   type: 'outage'
 };
 
@@ -320,6 +322,165 @@ const calculateWindowDuration = (window: MaintenanceWindow) => {
   }
 };
 
+const getWindowGmuds = (window?: MaintenanceWindow | null): string[] => {
+  if (!window) return [];
+  if (Array.isArray(window.gmuds) && window.gmuds.length > 0) {
+    return window.gmuds.map(g => (g || '').trim()).filter(Boolean);
+  }
+  if (typeof window.gmud === 'string' && window.gmud.trim()) {
+    return window.gmud.split(/[,;\n/]+/).map(g => g.trim()).filter(Boolean);
+  }
+  return [];
+};
+
+const formatWindowGmuds = (window?: MaintenanceWindow | null): string => {
+  return getWindowGmuds(window).join(', ');
+};
+
+interface WindowGmudsInputProps {
+  window: MaintenanceWindow;
+  onUpdate: (updates: Partial<MaintenanceWindow>) => void;
+}
+
+const WindowGmudsInput = ({ window, onUpdate }: WindowGmudsInputProps) => {
+  const [inputValue, setInputValue] = useState('');
+  const gmuds = getWindowGmuds(window);
+  const isRequired = window.type !== 'communication';
+  const hasError = isRequired && gmuds.length === 0 && !inputValue.trim();
+
+  const handleAdd = (valToAdd?: string) => {
+    const raw = typeof valToAdd === 'string' ? valToAdd : inputValue;
+    if (!raw || !raw.trim()) return;
+
+    const parts = raw.split(/[,;\n]+/).map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) return;
+
+    const newGmuds = [...gmuds];
+    parts.forEach(part => {
+      if (!newGmuds.includes(part)) {
+        newGmuds.push(part);
+      }
+    });
+
+    onUpdate({
+      gmuds: newGmuds,
+      gmud: newGmuds.join(', ')
+    });
+    setInputValue('');
+  };
+
+  const handleRemove = (indexToRemove: number) => {
+    const newGmuds = gmuds.filter((_, idx) => idx !== indexToRemove);
+    onUpdate({
+      gmuds: newGmuds,
+      gmud: newGmuds.join(', ')
+    });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAdd();
+    } else if (e.key === ',' || e.key === ';') {
+      e.preventDefault();
+      handleAdd();
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] flex items-center gap-1.5">
+          <span>{gmuds.length > 1 ? 'Números das GMUDs' : 'Número da GMUD'}</span>
+          {isRequired ? (
+            <span className="text-tertiary font-bold text-[13px] leading-none" title="Obrigatório">*</span>
+          ) : (
+            <span className="text-on-surface-variant/50 font-normal text-[10px] lowercase tracking-normal">(Opcional)</span>
+          )}
+          {gmuds.length > 0 && (
+            <span className="bg-primary/10 text-primary font-bold text-[10px] px-1.5 py-0.5 rounded-full lowercase tracking-normal">
+              {gmuds.length} {gmuds.length === 1 ? 'associada' : 'associadas'}
+            </span>
+          )}
+        </label>
+      </div>
+
+      {/* GMUDs Chips */}
+      {gmuds.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 p-2 bg-slate-50 border border-outline-variant/15 rounded-md min-h-[38px] items-center">
+          {gmuds.map((g, idx) => (
+            <span
+              key={idx}
+              className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 bg-white border border-primary/20 text-primary text-[12px] font-bold font-mono rounded shadow-xs group/chip transition-all hover:border-primary/40"
+            >
+              <FileText size={12} className="text-primary/70 shrink-0" />
+              <span className="select-all">{g}</span>
+              <button
+                type="button"
+                onClick={() => handleRemove(idx)}
+                className="p-0.5 text-on-surface-variant/40 hover:text-tertiary hover:bg-tertiary/10 rounded transition-colors ml-0.5"
+                title={`Remover ${g}`}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Input row */}
+      <div className="flex gap-2">
+        <div className="relative group flex-1">
+          <FileText 
+            className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors ${
+              hasError ? 'text-tertiary' : 'text-on-surface-variant group-focus-within:text-primary'
+            }`} 
+            size={16} 
+          />
+          <input 
+            type="text"
+            placeholder={gmuds.length === 0 ? "Ex: GMUD-12345 (Enter ou vírgula para adicionar)" : "Adicionar outra GMUD..."}
+            value={inputValue}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val.includes(',') || val.includes(';')) {
+                handleAdd(val);
+              } else {
+                setInputValue(val);
+              }
+            }}
+            onKeyDown={handleKeyDown}
+            onBlur={() => {
+              if (inputValue.trim()) {
+                handleAdd();
+              }
+            }}
+            className={`w-full pl-10 pr-3 py-2 bg-white rounded-sm transition-all text-[13px] font-medium outline-none border ${
+              hasError
+                ? 'border-tertiary/40 focus:ring-1 focus:ring-tertiary/20'
+                : 'border-outline-variant/15 focus:border-primary/40 focus:ring-1 focus:ring-primary/20'
+            }`}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => handleAdd()}
+          className="px-3.5 py-2 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-[13px] rounded-sm transition-all flex items-center gap-1.5 shrink-0"
+        >
+          <Plus size={14} />
+          <span>Adicionar</span>
+        </button>
+      </div>
+
+      {hasError && (
+        <span className="text-[11px] text-tertiary font-semibold mt-1 block">
+          Este campo é obrigatório (adicione pelo menos uma GMUD)
+        </span>
+      )}
+    </div>
+  );
+};
+
 export default function ITMemoGenerator() {
   const [data, setData] = useState<MemoData>(INITIAL_DATA);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -492,7 +653,9 @@ export default function ITMemoGenerator() {
           const w2 = windows2[i];
           
           if ((w1.type || 'outage') !== (w2.type || 'outage')) return false;
-          if ((w1.gmud || '') !== (w2.gmud || '')) return false;
+          const gmuds1 = getWindowGmuds(w1).sort().join(',');
+          const gmuds2 = getWindowGmuds(w2).sort().join(',');
+          if (gmuds1 !== gmuds2) return false;
           if (w1.startDate !== w2.startDate) return false;
           if (w1.endDate !== w2.endDate) return false;
           if (w1.startTime !== w2.startTime) return false;
@@ -575,7 +738,8 @@ export default function ITMemoGenerator() {
         const title = item.data.customTitlePt || 'Parada Programada';
         
         (item.data.windows || []).forEach((w) => {
-          const gmud = w.type === 'communication' ? 'N/A (Comunicação)' : (w.gmud || 'Sem GMUD');
+          const gmudsList = getWindowGmuds(w);
+          const gmud = w.type === 'communication' ? 'N/A (Comunicação)' : (gmudsList.length > 0 ? gmudsList.join(', ') : 'Sem GMUD');
           const typeStr = w.type === 'communication' ? 'Apenas Comunicação' : 'Parada de Sistema';
           const systems = (w.systems || []).join(', ');
           const startDate = w.startDate || '';
@@ -699,6 +863,8 @@ export default function ITMemoGenerator() {
       endDate: '',
       startTime: '',
       endTime: '',
+      gmud: '',
+      gmuds: [],
       type: 'outage'
     };
     setData(prev => ({ ...prev, windows: [...prev.windows, newWindow] }));
@@ -748,7 +914,7 @@ export default function ITMemoGenerator() {
     const currentData = dataRef.current;
     if (currentData.windows.every(w => w.systems.length === 0)) return;
     
-    const hasEmptyGmud = currentData.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    const hasEmptyGmud = currentData.windows.some(w => (w.type !== 'communication') && (getWindowGmuds(w).length === 0));
     if (hasEmptyGmud) {
       if (force) showToast("Por favor, preencha o número da GMUD em todas as janelas de parada de sistema para habilitar a tradução!", "error");
       return;
@@ -787,7 +953,7 @@ export default function ITMemoGenerator() {
         ${currentData.windows.map((w, i) => `
         Window ${i + 1}:
         Systems: ${(w.systems || []).join('/')}
-        GMUD: ${w.gmud || ''}
+        GMUD: ${formatWindowGmuds(w)}
         Start Date: ${w.startDate}
         End Date: ${w.endDate}
         Time: from ${w.startTime} to ${w.endTime}
@@ -814,13 +980,13 @@ export default function ITMemoGenerator() {
         if (result.en && Array.isArray(result.en.windows)) {
           result.en.windows = result.en.windows.map((w: any) => ({
             ...w,
-            systems: w.systems ? w.systems.replace(/\s*\(?GMUD\s*[:\-\d\s]*\)?/gi, '').trim() : ''
+            systems: w.systems ? w.systems.replace(/\s*\(?GMUD[s]?\s*[:\-\d\s,]*\)?/gi, '').trim() : ''
           }));
         }
         if (result.zh && Array.isArray(result.zh.windows)) {
           result.zh.windows = result.zh.windows.map((w: any) => ({
             ...w,
-            systems: w.systems ? w.systems.replace(/\s*\(?GMUD\s*[:\-\d\s]*\)?/gi, '').trim() : ''
+            systems: w.systems ? w.systems.replace(/\s*\(?GMUD[s]?\s*[:\-\d\s,]*\)?/gi, '').trim() : ''
           }));
         }
 
@@ -869,7 +1035,7 @@ export default function ITMemoGenerator() {
   };
 
   const handleGenerate = () => {
-    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (getWindowGmuds(w).length === 0));
     if (hasEmptyGmud) {
       showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema!', 'error');
       return;
@@ -884,7 +1050,7 @@ export default function ITMemoGenerator() {
   };
 
   const handleCopyText = async () => {
-    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (getWindowGmuds(w).length === 0));
     if (hasEmptyGmud) {
       showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema!', 'error');
       return;
@@ -950,7 +1116,7 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
     }
     if (!previewRef.current) return;
     
-    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (!w.gmud || !w.gmud.trim()));
+    const hasEmptyGmud = data.windows.some(w => (w.type !== 'communication') && (getWindowGmuds(w).length === 0));
     if (hasEmptyGmud) {
       showToast('Por favor, preencha o número da GMUD em todas as janelas de parada de sistema antes de baixar a imagem!', 'error');
       return;
@@ -1414,37 +1580,11 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                                 </div>
                               </div>
 
-                              {/* Número da GMUD */}
-                              <div>
-                                <label className="block text-on-surface-variant font-bold text-[11px] uppercase tracking-[0.1em] mb-2 flex items-center gap-1">
-                                  Número da GMUD{' '}
-                                  {window.type !== 'communication' ? (
-                                    <span className="text-tertiary font-bold text-[13px] leading-none" title="Obrigatório">*</span>
-                                  ) : (
-                                    <span className="text-on-surface-variant/50 font-normal text-[10px] lowercase tracking-normal">(Opcional)</span>
-                                  )}
-                                </label>
-                                <div className="relative group">
-                                  <FileText className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors ${((window.type !== 'communication') && (!window.gmud || !window.gmud.trim())) ? 'text-tertiary' : 'text-on-surface-variant group-focus-within:text-primary'}`} size={16} />
-                                  <input 
-                                    type="text"
-                                    placeholder="Ex: GMUD-12345"
-                                    value={window.gmud || ''}
-                                    required={window.type !== 'communication'}
-                                    onChange={(e) => updateWindow(window.id, { gmud: e.target.value })}
-                                    className={`w-full pl-10 pr-4 py-2 bg-white rounded-sm transition-all text-[14px] font-medium outline-none border ${
-                                      ((window.type !== 'communication') && (!window.gmud || !window.gmud.trim()))
-                                        ? 'border-tertiary/40 focus:ring-1 focus:ring-tertiary/20'
-                                        : 'border-transparent focus:ring-1 focus:ring-primary/20'
-                                    }`}
-                                  />
-                                </div>
-                                {((window.type !== 'communication') && (!window.gmud || !window.gmud.trim())) && (
-                                  <span className="text-[11px] text-tertiary font-semibold mt-1.5 block">
-                                    Este campo é obrigatório
-                                  </span>
-                                )}
-                              </div>
+                              {/* Número da GMUD / GMUDs */}
+                              <WindowGmudsInput
+                                window={window}
+                                onUpdate={(updates) => updateWindow(window.id, updates)}
+                              />
 
                               <div className="flex items-center gap-2 mb-4 cursor-pointer select-none" onClick={() => updateWindow(window.id, { showStandardText: window.showStandardText !== false ? false : true })}>
                                 <div className={`w-8 h-4 rounded-full relative transition-colors ${window.showStandardText !== false ? 'bg-primary' : 'bg-outline-variant/30'}`}>
@@ -1879,6 +2019,7 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                           const matchesQuery = !query ? true : (
                             (item.data.customTitlePt || '').toLowerCase().includes(query) ||
                             (item.data.windows || []).some(w => 
+                              getWindowGmuds(w).some(g => g.toLowerCase().includes(query)) ||
                               (w.gmud || '').toLowerCase().includes(query) ||
                               (w.systems || []).some(sys => sys.toLowerCase().includes(query)) ||
                               (w.startDate || '').includes(query) ||
@@ -1964,14 +2105,25 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                                       <div className="flex flex-wrap items-center gap-1">
                                         {(item.data.windows || []).map((w, idx) => {
                                           if (w.type === 'communication') return null;
-                                          return (
+                                          const gmuds = getWindowGmuds(w);
+                                          if (gmuds.length === 0) {
+                                            return (
+                                              <span 
+                                                key={idx} 
+                                                className="bg-primary/10 text-primary text-[10px] font-black px-1.5 py-0.5 rounded-sm uppercase tracking-wider"
+                                              >
+                                                Sem GMUD
+                                              </span>
+                                            );
+                                          }
+                                          return gmuds.map((g, gIdx) => (
                                             <span 
-                                              key={idx} 
+                                              key={`${idx}-${gIdx}`} 
                                               className="bg-primary/10 text-primary text-[10px] font-black px-1.5 py-0.5 rounded-sm uppercase tracking-wider"
                                             >
-                                              {w.gmud || 'Sem GMUD'}
+                                              {g}
                                             </span>
-                                          );
+                                          ));
                                         })}
                                       </div>
                                       <div className="h-6 w-px bg-outline-variant/20 mx-1 hidden sm:block"></div>
@@ -2026,10 +2178,22 @@ ${Array.isArray(translations.zh.windows) ? translations.zh.windows.map((w, idx) 
                                                 <span>Tipo de Janela:</span>
                                                 <span className="font-medium text-on-surface">{w.type === 'communication' ? 'Apenas Comunicação' : 'Parada de Sistema'}</span>
                                               </p>
-                                              <p className="flex justify-between">
-                                                <span>Número da GMUD:</span>
-                                                <span className="font-mono font-bold text-on-surface bg-slate-100 px-1 py-0.5 rounded text-[11px]">{w.type === 'communication' ? 'N/A' : (w.gmud || 'Não Informado')}</span>
-                                              </p>
+                                              <div className="flex justify-between items-start gap-2">
+                                                <span className="shrink-0">Número da GMUD:</span>
+                                                <div className="flex flex-wrap justify-end gap-1 max-w-[65%]">
+                                                  {w.type === 'communication' ? (
+                                                    <span className="font-mono font-bold text-on-surface bg-slate-100 px-1 py-0.5 rounded text-[11px]">N/A</span>
+                                                  ) : getWindowGmuds(w).length > 0 ? (
+                                                    getWindowGmuds(w).map((g, gIdx) => (
+                                                      <span key={gIdx} className="font-mono font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded text-[11px]">
+                                                        {g}
+                                                      </span>
+                                                    ))
+                                                  ) : (
+                                                    <span className="font-mono font-bold text-on-surface bg-slate-100 px-1 py-0.5 rounded text-[11px]">Não Informado</span>
+                                                  )}
+                                                </div>
+                                              </div>
                                               <p className="flex justify-between">
                                                 <span>Período:</span>
                                                 <span className="font-medium text-on-surface text-right">
